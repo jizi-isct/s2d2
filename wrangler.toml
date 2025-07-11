@@ -1,0 +1,9 @@
+name = "s2d2"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-07-11"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[env.dev]
+spam_score_threshold = "5.0"
