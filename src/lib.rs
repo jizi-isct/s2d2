@@ -1,13 +1,18 @@
 use json::object;
 use web_sys::{Blob, FormData};
-use worker::*;
 use worker::js_sys::{Array, Uint8Array};
+use worker::*;
+use regex::Regex;
 
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    console_error_panic_hook::set_once();
+
     console_log!("Request: {:?}", req);
 
-    console_error_panic_hook::set_once();
+    let spam_score_threshold = env
+        .var("spam_score_threshold")?.to_string().parse::<f64>().unwrap();
+
 
     // Check if the request is a multipart form
     let content_type = req.headers().get("Content-Type")?.unwrap_or_default();
@@ -17,15 +22,20 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let FormEntry::Field(from) = form_data.get("from").unwrap() else {
             return Err(Error::from("Missing 'from' field"));
         };
-        let FormEntry::Field(to) = form_data.get("to").unwrap() else {
+        let FormEntry::Field(to_raw) = form_data.get("to").unwrap() else {
             return Err(Error::from("Missing 'to' field"));
         };
+        let to = extract_addresses(&*to_raw);
         let FormEntry::Field(subject) = form_data.get("subject").unwrap() else {
             return Err(Error::from("Missing 'subject' field"));
         };
-        let FormEntry::Field(text) = form_data.get("text").unwrap() else {
+        let FormEntry::Field(mut text) = form_data.get("text").unwrap() else {
             return Err(Error::from("Missing 'text' field"));
         };
+        if text.len() > 100 {
+            text.truncate(100);
+            text.push_str("...");
+        }
         // Process the multipart form data
         let mut attachments = vec![];
         match form_data.get("attachment-info") {
@@ -36,7 +46,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     };
                     attachments.push(file)
                 }
-            },
+            }
             _ => {}
         };
 
@@ -49,7 +59,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
             },
             object! {
                 name: "宛先",
-                value: to,
+                value: to_raw,
                 inline: true
             },
             object! {
@@ -73,13 +83,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
                     inline: true
                 });
 
-                if spam_score_f
-                    > env
-                        .var("spam_score_threshold")?
-                        .to_string()
-                        .parse::<f64>()
-                        .unwrap_or(5.0)
-                {
+                if spam_score_f > spam_score_threshold {
                     (
                         0xFF0000,
                         "スパムメールの可能性が高いです。注意してください。",
@@ -98,7 +102,11 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
             for file in &attachments {
                 size += file.size();
                 if size > 1024 * 1024 * 10 {
-                    attachment_info.push_str(&format!("- {} ({}) サイズが大きすぎるのでメーラーからアクセスしてください\n", file.name(), file.type_()));
+                    attachment_info.push_str(&format!(
+                        "- {} ({}) サイズが大きすぎるのでメーラーからアクセスしてください\n",
+                        file.name(),
+                        file.type_()
+                    ));
                     continue;
                 }
                 attachment_info.push_str(&format!("- {} ({})\n", file.name(), file.type_()));
@@ -148,19 +156,52 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         init.with_method(Method::Post);
         init.with_body(Some(form_data.into()));
 
-        let mut res = Fetch::Request(Request::new_with_init(&*env.secret("WEBHOOK_URL")?.to_string(), &init)?)
-            .send()
-            .await?;
+        let webhook_urls = env.kv("WEBHOOK_URLS")?;
+        for to in to {
+            console_debug!("Sending webhook to {}", to);
+            let webhook_url = match webhook_urls.get(to.as_str()).text().await? {
+                Some(url) => url,
+                None => match webhook_urls.get("default").text().await? {
+                    Some(url) => url,
+                    None => {
+                        return Err(Error::from("No webhook URL found"));
+                    }
+                },
+            };
 
-        if 200 <= res.status_code() && res.status_code() < 300 {
-            console_log!("Webhook sent!");
-            Response::ok("Webhook sent!")
-        } else {
-            console_error!("Failed: {}", res.text().await?);
-            Response::error(format!("Failed: {}", res.text().await?), res.status_code())
+            let mut res = send_webhook(&webhook_url, &init).await?;
+
+            if 200 <= res.status_code() && res.status_code() < 300 {
+                console_log!("Webhook sent!");
+            } else {
+                console_error!("Failed: {:?}", res);
+                console_error!("{:?}", res.text().await?);
+            }
         }
+
+        Response::ok("OK")
     } else {
         console_error!("Invalid Content-Type");
         Response::error("Invalid Content-Type", 400)
     }
+}
+
+async fn send_webhook(webhook_url: &str, init: &RequestInit) -> Result<Response> {
+    Fetch::Request(Request::new_with_init(webhook_url, init)?)
+        .send()
+        .await
+}
+
+#[derive(Debug)]
+struct Envelope {
+    to: Vec<String>,
+    from: String,
+}
+
+fn extract_addresses(to_header: &str) -> Vec<String> {
+    // メールアドレスにマッチする正規表現
+    let re = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
+    re.find_iter(to_header)
+        .map(|mat| mat.as_str().to_string())
+        .collect()
 }

@@ -10,3 +10,10 @@ command = "cargo install -q worker-build && worker-build --release"
 
 [env.dev]
 spam_score_threshold = "5.0"
+
+[[kv_namespaces]]
+binding = "WEBHOOK_URLS"
+id = "2db7445c0b6548d6aa73fc34bafe72d1"
+
+[vars]
+spam_score_threshold = "5.0"
