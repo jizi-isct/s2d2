@@ -8,8 +8,6 @@ use worker::*;
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
-    console_log!("Request: {:?}", req);
-
     let spam_score_threshold = env
         .var("spam_score_threshold")?
         .to_string()
@@ -153,15 +151,12 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         }
 
         // create request
-        console_log!("Sending webhook...");
-        console_log!("{:?}", form_data.get("payload_json"));
         let mut init = RequestInit::new();
         init.with_method(Method::Post);
         init.with_body(Some(form_data.into()));
 
         let webhook_urls = env.kv("WEBHOOK_URLS")?;
         for to in to {
-            console_debug!("Sending webhook to {}", to);
             let webhook_url = match webhook_urls.get(to.as_str()).text().await? {
                 Some(url) => url,
                 None => match webhook_urls.get("default").text().await? {
@@ -174,18 +169,17 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
             let mut res = send_webhook(&webhook_url, &init).await?;
 
-            if 200 <= res.status_code() && res.status_code() < 300 {
-                console_log!("Webhook sent!");
-            } else {
+            if !(200 <= res.status_code() && res.status_code() < 300) {
                 console_error!("Failed: {:?}", res);
                 console_error!("{:?}", res.text().await?);
+                return Err(Error::from("Failed to send webhook"));
             }
         }
 
         Response::ok("OK")
     } else {
         console_error!("Invalid Content-Type");
-        Response::error("Invalid Content-Type", 400)
+        Err(Error::from("Invalid Content-Type"))
     }
 }
 
