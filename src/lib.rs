@@ -29,6 +29,9 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let FormEntry::Field(subject) = form_data.get("subject").unwrap() else {
             return Err(Error::from("Missing 'subject' field"));
         };
+        if subject.starts_with("[SPAM]") {
+            return Response::ok("OK");
+        }
         let mut text = match form_data.get("text") {
             Some(FormEntry::Field(text)) => text.to_string(),
             _ => "本文を取得できませんでした".to_string(),
