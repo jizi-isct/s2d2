@@ -1,8 +1,8 @@
 use json::object;
+use regex::Regex;
 use web_sys::{Blob, FormData};
 use worker::js_sys::{Array, Uint8Array};
 use worker::*;
-use regex::Regex;
 
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -11,8 +11,10 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_log!("Request: {:?}", req);
 
     let spam_score_threshold = env
-        .var("spam_score_threshold")?.to_string().parse::<f64>().unwrap();
-
+        .var("spam_score_threshold")?
+        .to_string()
+        .parse::<f64>()
+        .unwrap();
 
     // Check if the request is a multipart form
     let content_type = req.headers().get("Content-Type")?.unwrap_or_default();
@@ -29,11 +31,12 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let FormEntry::Field(subject) = form_data.get("subject").unwrap() else {
             return Err(Error::from("Missing 'subject' field"));
         };
-        let FormEntry::Field(mut text) = form_data.get("text").unwrap() else {
-            return Err(Error::from("Missing 'text' field"));
+        let mut text = match form_data.get("text") {
+            Some(FormEntry::Field(text)) => text.to_string(),
+            _ => "本文を取得できませんでした".to_string(),
         };
-        if text.len() > 100 {
-            text.truncate(100);
+        if text.chars().count() > 100 {
+            text = text.chars().take(100).collect::<String>();
             text.push_str("...");
         }
         // Process the multipart form data
@@ -190,12 +193,6 @@ async fn send_webhook(webhook_url: &str, init: &RequestInit) -> Result<Response>
     Fetch::Request(Request::new_with_init(webhook_url, init)?)
         .send()
         .await
-}
-
-#[derive(Debug)]
-struct Envelope {
-    to: Vec<String>,
-    from: String,
 }
 
 fn extract_addresses(to_header: &str) -> Vec<String> {
