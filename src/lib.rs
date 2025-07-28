@@ -32,14 +32,10 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         if subject.starts_with("[SPAM]") {
             return Response::ok("OK");
         }
-        let mut text = match form_data.get("text") {
+        let text = match form_data.get("text") {
             Some(FormEntry::Field(text)) => text.to_string(),
             _ => "本文を取得できませんでした".to_string(),
         };
-        if text.chars().count() > 100 {
-            text = text.chars().take(100).collect::<String>();
-            text.push_str("...");
-        }
         // Process the multipart form data
         let mut attachments = vec![];
         match form_data.get("attachment-info") {
