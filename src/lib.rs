@@ -1,3 +1,6 @@
+mod email;
+
+use crate::email::Email;
 use json::object;
 use regex::Regex;
 use web_sys::{Blob, FormData};
@@ -19,57 +22,30 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     if content_type.starts_with("multipart/form-data") {
         let form_data = req.form_data().await?;
-        let FormEntry::Field(from) = form_data.get("from").unwrap() else {
-            return Err(Error::from("Missing 'from' field"));
-        };
-        let FormEntry::Field(to_raw) = form_data.get("to").unwrap() else {
-            return Err(Error::from("Missing 'to' field"));
-        };
-        let to = extract_addresses(&*to_raw);
-        let FormEntry::Field(subject) = form_data.get("subject").unwrap() else {
-            return Err(Error::from("Missing 'subject' field"));
-        };
-        if subject.starts_with("[SPAM]") {
-            return Response::ok("OK");
-        }
-        let text = match form_data.get("text") {
-            Some(FormEntry::Field(text)) => text.to_string(),
-            _ => "本文を取得できませんでした".to_string(),
-        };
-        // Process the multipart form data
-        let mut attachments = vec![];
-        match form_data.get("attachment-info") {
-            Some(FormEntry::Field(attachment_info)) => {
-                for (name, _) in json::parse(&*attachment_info).unwrap().entries() {
-                    let FormEntry::File(file) = form_data.get(name).unwrap() else {
-                        return Err(Error::from(format!("Missing field: {}", name)));
-                    };
-                    attachments.push(file)
-                }
-            }
-            _ => {}
+        let Some(email) = Email::from_form_data(&form_data).unwrap() else {
+            return Err(Error::from("Invalid email"));
         };
 
         // Discord webhook
         let mut fields = vec![
             object! {
                 name: "送信者",
-                value: from,
+                value: email.from,
                 inline: true
             },
             object! {
                 name: "宛先",
-                value: to_raw,
+                value: email.to_raw,
                 inline: true
             },
             object! {
                 name: "件名",
-                value: subject,
+                value: email.subject,
                 inline: true
             },
             object! {
                 name: "本文",
-                value: text,
+                value: email.text,
                 inline: false
             },
         ];
@@ -97,9 +73,9 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
         let mut size = 0;
         // Add attachment information to the fields if there are attachments
-        if !attachments.is_empty() {
+        if !email.attachments.is_empty() {
             let mut attachment_info = String::new();
-            for file in &attachments {
+            for file in &email.attachments {
                 size += file.size();
                 if size > 1024 * 1024 * 10 {
                     attachment_info.push_str(&format!(
@@ -136,7 +112,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         let form_data = FormData::new()?;
         let mut size = 0;
         form_data.append_with_str("payload_json", &payload.dump())?;
-        for (i, attachment) in attachments.into_iter().enumerate() {
+        for (i, attachment) in email.attachments.into_iter().enumerate() {
             size += attachment.size();
             if size > 1024 * 1024 * 10 {
                 continue;
@@ -155,7 +131,7 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         init.with_body(Some(form_data.into()));
 
         let webhook_urls = env.kv("WEBHOOK_URLS")?;
-        for to in to {
+        for to in email.to {
             let webhook_url = match webhook_urls.get(to.as_str()).text().await? {
                 Some(url) => url,
                 None => match webhook_urls.get("default").text().await? {
