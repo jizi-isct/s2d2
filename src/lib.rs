@@ -23,7 +23,8 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if content_type.starts_with("multipart/form-data") {
         let form_data = req.form_data().await?;
         let Some(email) = Email::from_form_data(&form_data).unwrap() else {
-            return Err(Error::from("Invalid email"));
+            console_log!("The email was rejected.");
+            return Response::ok("the email was rejected");
         };
 
         // Discord webhook
@@ -146,7 +147,8 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
             if !(200 <= res.status_code() && res.status_code() < 300) {
                 console_error!("Failed: {:?}", res);
-                console_error!("{:?}", res.text().await?);
+                console_error!("{}", res.text().await?);
+                console_error!("{}", payload.dump());
                 return Err(Error::from("Failed to send webhook"));
             }
         }
