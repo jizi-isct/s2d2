@@ -25,10 +25,15 @@ impl Email {
         if subject.starts_with("[SPAM]") {
             return Ok(None);
         }
-        let text = match form_data.get("text") {
+        let mut text = match form_data.get("text") {
             Some(FormEntry::Field(text)) => text,
             _ => "本文を取得できませんでした".to_string(),
         };
+
+        if text.chars().count() > 1000 {
+            text = text.chars().take(1000).collect::<String>();
+            text.push_str("...");
+        }
 
         // Process the multipart form data
         let mut attachments = vec![];
