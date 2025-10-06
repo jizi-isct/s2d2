@@ -17,3 +17,7 @@ id = "2db7445c0b6548d6aa73fc34bafe72d1"
 
 [vars]
 spam_score_threshold = "5.0"
+
+[[routes]]
+pattern = "https://s2d2.jizi.jp"
+custom_domain = true
