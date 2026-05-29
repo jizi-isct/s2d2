@@ -109,47 +109,33 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
             embeds: vec![embed]
         };
 
-        // Create FormData
-        let form_data = FormData::new()?;
-        let mut size = 0;
-        form_data.append_with_str("payload_json", &payload.dump())?;
-        for (i, attachment) in email.attachments.into_iter().enumerate() {
-            size += attachment.size();
-            if size > 1024 * 1024 * 10 {
-                continue;
-            }
-            let name = attachment.name().clone();
-            let array = Uint8Array::from(&attachment.bytes().await?[..]);
-            let blob_parts = Array::new();
-            blob_parts.push(&array.buffer());
-            let blob = Blob::new_with_u8_array_sequence(&blob_parts)?;
-            form_data.append_with_blob_and_filename(&*format!("files[{}]", i), &blob, &*name)?;
-        }
-
-        // create request
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post);
-        init.with_body(Some(form_data.into()));
+        let payload_json = payload.dump();
+        let attachments = collect_webhook_attachments(email.attachments).await?;
 
         let webhook_urls = env.kv("WEBHOOK_URLS")?;
         for to in email.to {
-            let webhook_url = match webhook_urls.get(to.as_str()).text().await? {
-                Some(url) => url,
+            let urls = match webhook_urls.get(to.as_str()).text().await? {
+                Some(urls) => parse_webhook_urls(&urls),
                 None => match webhook_urls.get("default").text().await? {
-                    Some(url) => url,
-                    None => {
-                        return Err(Error::from("No webhook URL found"));
-                    }
+                    Some(urls) => parse_webhook_urls(&urls),
+                    None => Vec::new(),
                 },
             };
 
-            let mut res = send_webhook(&webhook_url, &init).await?;
+            if urls.is_empty() {
+                return Err(Error::from("No webhook URL found"));
+            }
 
-            if !(200 <= res.status_code() && res.status_code() < 300) {
-                console_error!("Failed: {:?}", res);
-                console_error!("{}", res.text().await?);
-                console_error!("{}", payload.dump());
-                return Err(Error::from("Failed to send webhook"));
+            for webhook_url in urls {
+                let init = create_webhook_request_init(&payload_json, &attachments)?;
+                let mut res = send_webhook(&webhook_url, &init).await?;
+
+                if !(200 <= res.status_code() && res.status_code() < 300) {
+                    console_error!("Failed: {:?}", res);
+                    console_error!("{}", res.text().await?);
+                    console_error!("{}", payload_json);
+                    return Err(Error::from("Failed to send webhook"));
+                }
             }
         }
 
@@ -158,6 +144,55 @@ async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
         console_error!("Invalid Content-Type");
         Err(Error::from("Invalid Content-Type"))
     }
+}
+
+async fn collect_webhook_attachments(
+    attachments: Vec<worker::File>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    let mut size = 0;
+
+    for attachment in attachments {
+        size += attachment.size();
+        if size > 1024 * 1024 * 10 {
+            continue;
+        }
+
+        files.push((attachment.name().clone(), attachment.bytes().await?));
+    }
+
+    Ok(files)
+}
+
+fn create_webhook_request_init(
+    payload_json: &str,
+    attachments: &[(String, Vec<u8>)],
+) -> Result<RequestInit> {
+    let form_data = FormData::new()?;
+    form_data.append_with_str("payload_json", payload_json)?;
+
+    for (i, (name, bytes)) in attachments.iter().enumerate() {
+        let array = Uint8Array::from(&bytes[..]);
+        let blob_parts = Array::new();
+        blob_parts.push(&array.buffer());
+        let blob = Blob::new_with_u8_array_sequence(&blob_parts)?;
+        form_data.append_with_blob_and_filename(&format!("files[{}]", i), &blob, name)?;
+    }
+
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    init.with_body(Some(form_data.into()));
+
+    Ok(init)
+}
+
+fn parse_webhook_urls(webhook_urls: &str) -> Vec<String> {
+    webhook_urls
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 async fn send_webhook(webhook_url: &str, init: &RequestInit) -> Result<Response> {
@@ -172,4 +207,28 @@ fn extract_addresses(to_header: &str) -> Vec<String> {
     re.find_iter(to_header)
         .map(|mat| mat.as_str().to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_webhook_urls_splits_comma_separated_values() {
+        assert_eq!(
+            parse_webhook_urls(
+                "https://example.com/a, https://example.com/b,,https://example.com/c "
+            ),
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+                "https://example.com/c".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_webhook_urls_ignores_empty_values() {
+        assert!(parse_webhook_urls(" , ,, ").is_empty());
+    }
 }

@@ -18,7 +18,7 @@ impl Email {
         let FormEntry::Field(to_raw) = form_data.get("to").unwrap() else {
             return Err(anyhow!("Missing 'to' field"));
         };
-        let to = extract_addresses(&*to_raw);
+        let to = extract_addresses(&to_raw);
         let FormEntry::Field(subject) = form_data.get("subject").unwrap() else {
             return Err(anyhow!("Missing 'subject' field"));
         };
@@ -37,16 +37,13 @@ impl Email {
 
         // Process the multipart form data
         let mut attachments = vec![];
-        match form_data.get("attachment-info") {
-            Some(FormEntry::Field(attachment_info)) => {
-                for (name, _) in json::parse(&*attachment_info).unwrap().entries() {
-                    let FormEntry::File(file) = form_data.get(name).unwrap() else {
-                        return Err(anyhow!("Missing field: {}", name));
-                    };
-                    attachments.push(file)
-                }
+        if let Some(FormEntry::Field(attachment_info)) = form_data.get("attachment-info") {
+            for (name, _) in json::parse(&attachment_info).unwrap().entries() {
+                let FormEntry::File(file) = form_data.get(name).unwrap() else {
+                    return Err(anyhow!("Missing field: {}", name));
+                };
+                attachments.push(file)
             }
-            _ => {}
         };
 
         Ok(Some(Self {
